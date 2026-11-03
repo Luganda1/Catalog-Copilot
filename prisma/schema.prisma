@@ -1,0 +1,130 @@
+// Prisma schema for Catalog Copilot.
+// Shopify is the source of truth for the live catalog: we only store the
+// snapshot a suggestion was generated from, the AI output, and what the
+// merchant approved/published. We never mirror the full product catalog.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Required by @shopify/shopify-app-session-storage-prisma. Keep the model name
+// and fields as-is; the adapter reads and writes them directly.
+model Session {
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+// One row per installed store. Every application record hangs off a Shop so
+// queries can always be scoped by the authenticated shop's id.
+model Shop {
+  id            String    @id @default(cuid())
+  // The *.myshopify.com domain from the authenticated session.
+  domain        String    @unique
+  createdAt     DateTime  @default(now())
+  uninstalledAt DateTime?
+
+  suggestions     Suggestion[]
+  publishAttempts PublishAttempt[]
+}
+
+enum SuggestionStatus {
+  PENDING // awaiting merchant review (also the state after a failed publish, so it can be retried)
+  PUBLISHING // a publish request is in flight; acts as a lock against duplicate submissions
+  PUBLISHED // Shopify confirmed the update
+  REJECTED // merchant rejected; nothing was sent to Shopify
+}
+
+enum TagMode {
+  ADD // append approved tags to the product's existing tags
+  REPLACE // replace the product's tags with the approved tags
+}
+
+model Suggestion {
+  id        String @id @default(cuid())
+  shopId    String
+  shop      Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  // Shopify GID, e.g. "gid://shopify/Product/123". Stored as a string, never parsed as a number.
+  productId String
+
+  // --- Source snapshot: product fields as they were when the suggestion was generated.
+  // Used for the side-by-side view and to detect edits made in Shopify before publishing.
+  sourceTitle           String
+  sourceDescriptionHtml String
+  sourceTags            String[]
+
+  // --- Validated AI output.
+  aiDescriptionHtml String
+  aiTags            String[]
+  missingInfo       String[]
+  warnings          String[]
+  aiModel           String
+  promptVersion     String
+
+  // --- Merchant decision. Null until the merchant approves.
+  // A null approved field means "do not change this field in Shopify".
+  approvedDescriptionHtml String?
+  approvedTags            String[]
+  publishTags             Boolean  @default(false)
+  tagMode                 TagMode?
+
+  status      SuggestionStatus @default(PENDING)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  decidedAt   DateTime?
+  publishedAt DateTime?
+
+  publishAttempts PublishAttempt[]
+
+  // Lets PublishAttempt reference (id, shopId) so the database itself
+  // guarantees an attempt and its suggestion belong to the same shop.
+  @@unique([id, shopId])
+  @@index([shopId, productId])
+  @@index([shopId, createdAt])
+}
+
+enum PublishAttemptStatus {
+  SUCCEEDED // Shopify returned the updated product with no errors
+  FAILED // GraphQL errors, mutation userErrors, or a network failure
+  CONFLICT // product changed in Shopify since the snapshot; nothing was sent
+}
+
+// Append-only log of every publish attempt, successful or not.
+model PublishAttempt {
+  id           String     @id @default(cuid())
+  shopId       String
+  shop         Shop       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  suggestionId String
+  suggestion   Suggestion @relation(fields: [suggestionId, shopId], references: [id, shopId], onDelete: Cascade)
+
+  status          PublishAttemptStatus
+  // What we attempted to write (null description = description not changed).
+  descriptionHtml String?
+  tags            String[]
+  errorMessage    String?
+  // Raw GraphQL errors / userErrors for debugging, if any.
+  errorDetails    Json?
+  createdAt       DateTime @default(now())
+
+  @@index([shopId, createdAt])
+  @@index([suggestionId])
+}
