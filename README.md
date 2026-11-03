@@ -2,8 +2,8 @@
 
 An embedded Shopify app that helps merchants find incomplete product listings, draft grounded descriptions and tags with AI, and review every change before it is published to Shopify.
 
-> **Status: Phase 1 of 5 (scaffold, configuration, database, authentication).**
-> The product list, AI suggestions, publishing, and history are not implemented yet. See [Roadmap](#roadmap).
+> **Status: Phase 2 of 5 (live product list).**
+> AI suggestions, publishing, and history are not implemented yet. See [Roadmap](#roadmap).
 
 ## Stack
 
@@ -77,7 +77,7 @@ npm run config:link
 npm run dev
 ```
 
-Press `p` in the CLI to open the app. After you approve installation on the development store, the **Products** page should show your store name, its `.myshopify.com` domain, and the granted `read_products` scope.
+Press `p` in the CLI to open the app and install it on the development store. The **Products** page lists your store's products (20 per page) with their status, whether the description is missing, and their tags. Click a product title to open its review page.
 
 ### Useful commands
 
@@ -86,15 +86,24 @@ Press `p` in the CLI to open the app. After you approve installation on the deve
 | `npm run dev` | Run the app via Shopify CLI |
 | `npm run typecheck` | React Router type generation + `tsc` |
 | `npm run lint` | ESLint |
+| `npm test` | Unit tests (Vitest) |
 | `npm run build` | Production build |
 | `npm run graphql-codegen` | Regenerate Admin API types from `#graphql` queries |
 | `npx prisma migrate dev --name <name>` | Create a new migration after editing the schema |
 | `npx prisma studio` | Browse the database |
 
+## Product list (Phase 2)
+
+- `app/services/shopify/products.server.ts` reads products live with cursor pagination (`first`/`after`, `last`/`before`); nothing is stored.
+- `app/lib/listing.ts` flags listings with plain code: a description is missing if Shopify's HTML-stripped `description` is empty or whitespace; tags are missing if there are none (or only blank ones).
+- Product IDs stay strings. URLs use the numeric suffix (`/app/products/123`), which is validated and turned back into `gid://shopify/Product/123`.
+- Auth failures are thrown `Response`s and always propagate; only real API failures are caught and shown as an error banner with **Try again**.
+- React 18 sets props on Polaris web components as HTML attributes, so boolean props (`loading`, `disabled`) are only spread in when true, and pagination uses buttons with `onClick` rather than the table's custom `onNextPage` event.
+
 ## Roadmap
 
 1. ✅ **Scaffold, configuration, database, authentication**
-2. ⬜ Real Shopify product list (pagination, missing-description/tag flags)
+2. ✅ **Real Shopify product list** (pagination, missing-description/tag flags, product review page with live facts)
 3. ⬜ AI generation and suggestion review (structured output, server-side validation)
 4. ⬜ Approved publishing (conflict check, error handling, duplicate-submit lock) and history
 5. ⬜ Verification, evaluation set, documentation, deployment guide
