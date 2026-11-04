@@ -52,6 +52,7 @@ enum SuggestionStatus {
   PUBLISHING // a publish request is in flight; acts as a lock against duplicate submissions
   PUBLISHED // Shopify confirmed the update
   REJECTED // merchant rejected; nothing was sent to Shopify
+  SUPERSEDED // replaced by a newer suggestion for the same product before a decision was made
 }
 
 enum TagMode {
