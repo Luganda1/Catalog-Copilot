@@ -62,6 +62,32 @@ describe("generateSuggestion", () => {
     expect(result).toMatchObject({ model: "fake-model", promptVersion: PROMPT_VERSION });
   });
 
+  it("warns about claims in the draft that the facts don't support", async () => {
+    const result = await generateSuggestion(
+      fakeProvider({
+        description: "A durable heated jacket.",
+        tags: ["waterproof"],
+        missingInformation: [],
+        warnings: [],
+      }),
+      facts,
+    );
+    expect(result.output.warnings).toEqual([expect.stringMatching(/waterproof, durable/)]);
+  });
+
+  it("adds no claim warning for a factual draft", async () => {
+    const result = await generateSuggestion(
+      fakeProvider({
+        description: "A heated jacket with three heat settings.",
+        tags: ["jacket"],
+        missingInformation: [],
+        warnings: [],
+      }),
+      facts,
+    );
+    expect(result.output.warnings).toEqual([]);
+  });
+
   it("adds a warning when the description was truncated", async () => {
     const result = await generateSuggestion(new MockProvider(), facts, {
       descriptionTruncated: true,

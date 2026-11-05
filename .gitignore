@@ -32,3 +32,6 @@ pnpm-lock.yaml
 
 # Local technical documentation (not committed)
 TECHNICAL_DOCUMENT.md
+
+# Eval run outputs (contain model responses)
+evals/results/
