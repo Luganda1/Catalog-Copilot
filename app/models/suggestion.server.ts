@@ -54,3 +54,41 @@ export async function getPendingSuggestion(shopId: string, productId: string) {
     orderBy: { createdAt: "desc" },
   });
 }
+
+/**
+ * Decided suggestions and any with publish attempts, newest first, for one shop.
+ * Undecided suggestions without attempts (and replaced ones) aren't history yet.
+ */
+export async function getHistory(shopId: string, limit: number) {
+  return db.suggestion.findMany({
+    where: {
+      shopId,
+      OR: [
+        { status: { in: ["PUBLISHED", "REJECTED", "PUBLISHING"] } },
+        { publishAttempts: { some: {} } },
+      ],
+    },
+    include: { publishAttempts: { orderBy: { createdAt: "asc" } } },
+    orderBy: { updatedAt: "desc" },
+    take: limit,
+  });
+}
+
+export type ProductSuggestionState = "draft" | "published";
+
+/**
+ * For each product, whether it has a draft waiting for review or a published
+ * suggestion (the most recent of the two wins). Scoped to one shop.
+ */
+export async function getSuggestionStates(shopId: string, productIds: string[]) {
+  const rows = await db.suggestion.findMany({
+    where: { shopId, productId: { in: productIds }, status: { in: ["PENDING", "PUBLISHED"] } },
+    select: { productId: true, status: true },
+    orderBy: { updatedAt: "desc" },
+  });
+  const states: Record<string, ProductSuggestionState> = {};
+  for (const row of rows) {
+    states[row.productId] ??= row.status === "PENDING" ? "draft" : "published";
+  }
+  return states;
+}

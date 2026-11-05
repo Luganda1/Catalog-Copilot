@@ -2,8 +2,8 @@
 
 An embedded Shopify app that helps merchants find incomplete product listings, draft grounded descriptions and tags with AI, and review every change before it is published to Shopify.
 
-> **Status: Phase 3 of 5 (AI suggestions and review).**
-> Publishing approved changes and the change history are not implemented yet. See [Roadmap](#roadmap).
+> **Status: Phase 4 of 5 (approved publishing and history).**
+> The evaluation set, deployment guide, and final docs come in Phase 5. See [Roadmap](#roadmap).
 
 ## Stack
 
@@ -35,7 +35,7 @@ Key rules the code follows:
 
 - **Shopify is the source of truth.** We store only the snapshot a suggestion was based on, the AI output, the merchant's decision, and publish attempts. The catalog itself is never copied.
 - **Every record belongs to a shop.** The shop is always derived from the authenticated session (`session.shop`), never from request input. `PublishAttempt` references `Suggestion` by `(id, shopId)`, so the database rejects an attempt that points at another shop's suggestion.
-- **Least privilege.** Phases 1–3 only request `read_products`. `write_products` is added in Phase 4, when publishing exists.
+- **Least privilege.** The app requests `read_products` and `write_products` only. `write_products` was added in Phase 4, when publishing arrived; nothing else (orders, customers, themes) is requested.
 
 ### Data model (`prisma/schema.prisma`)
 
@@ -89,7 +89,8 @@ Press `p` in the CLI to open the app and install it on the development store. Th
 | `npm run dev` | Run the app via Shopify CLI |
 | `npm run typecheck` | React Router type generation + `tsc` |
 | `npm run lint` | ESLint |
-| `npm test` | Unit tests (Vitest) |
+| `npm test` | Unit tests (Vitest, no database needed) |
+| `npm run test:integration` | Integration tests against the `catalog_copilot_test` database (needs `docker compose up -d postgres`) |
 | `npm run build` | Production build |
 | `npm run graphql-codegen` | Regenerate Admin API types from `#graphql` queries |
 | `npx prisma migrate dev --name <name>` | Create a new migration after editing the schema |
@@ -113,12 +114,36 @@ Flow: **Generate** → re-read the product from Shopify → build `ProductFacts`
 - **Server-side validation.** A stricter Zod schema checks every provider's output: lengths, tag count and format, no HTML, no extra fields. Invalid output is never saved or shown. **Passing validation proves the shape, not the facts**, and the review screen says so.
 - **Stored safely.** The plain-text description is escaped into `<p>` HTML by the app (`textToSafeHtml`). Every suggestion records its model, prompt version, and the product snapshot.
 - **One pending suggestion per product.** Regenerating marks the previous one `SUPERSEDED` in the same transaction.
-- **Review screen.** Current and suggested content side by side, an editable description and tags, a choice between **Add to the existing tags** and **Replace all existing tags** with a preview of what will be added or removed, and banners for warnings, missing information, mock output, and products edited since generation. Reject and Approve & Publish arrive in Phase 4.
+- **Review screen.** Current and suggested content side by side, an editable description and tags, a choice between **Add to the existing tags** and **Replace all existing tags** with a preview of what will be added or removed, and banners for warnings, missing information, mock output, and products edited since generation. A merchant chooses what to publish (description, tags, or both) and then **Reject** or **Approve & Publish**.
+
+## Publishing and history (Phase 4)
+
+Nothing is written to Shopify until the merchant clicks **Approve & Publish**. Generating a suggestion only reads.
+
+`publishSuggestion` (`app/services/publish.server.ts`):
+
+1. **Lock.** One conditional update moves the suggestion from `PENDING` to `PUBLISHING` and stores the approved fields. If it doesn't match a row (already published, rejected, replaced, in progress, or another shop's), nothing happens. A double click, a second tab, or a replayed request can't publish twice. Both buttons are also disabled while a request is in flight, but the server lock is what guarantees it.
+2. **Re-read and compare.** The product is fetched again and its title, description, and tags are compared with the snapshot the suggestion was generated from. If anything changed in Shopify, nothing is sent and the attempt is recorded as `CONFLICT`.
+3. **Update.** `productUpdate` sends only the fields the merchant chose. Tags are computed from the product's *current* tags with the chosen mode (add or replace). The merchant's description text is escaped into `<p>` HTML on the server.
+4. **Check the result.** Thrown GraphQL errors (throttling, bad input, missing scope) and `userErrors` (returned with HTTP 200) both count as failure.
+5. **Record.** Only a confirmed update marks the suggestion `PUBLISHED`. Any failure records a `FAILED` attempt with the error details and returns the suggestion to `PENDING` with the merchant's edits, so it can be retried.
+
+**Reject** marks the suggestion `REJECTED`. The function doesn't receive a Shopify client, so it can't change the product.
+
+**Race-condition limits (honest version):**
+
+- Shopify's `productUpdate` has no "only if unchanged" option. If someone edits the product in Shopify in the moment between the re-read and the update, that edit can be overwritten. The comparison narrows the window but can't close it.
+- After a network error we can't know whether Shopify applied the update. The attempt is recorded as `FAILED`, never as success. If the update did land, a retry is stopped by the comparison (the product no longer matches the snapshot) instead of writing twice.
+- If the server crashes mid-publish, the lock is treated as abandoned after 5 minutes and can be retried; the comparison protects that retry the same way.
+
+**History** (`/app/history`) lists the shop's published and rejected suggestions and any with failed or conflicting attempts. It shows what was changed, the model, and the last error. It's always filtered by the authenticated shop.
+
+**Interface.** The dashboard scans the 100 most recently updated products (one query, about 4 cost points per product) to show catalog health as square tiles. The tiles also filter the list (`?view=attention|description|tags`). A **Next up** card links to the next incomplete listing. Products show as compact rows with 120 px thumbnails. The review page shows progress steps (generate → review → publish), and its sidebar holds the publish options and a pre-publish checklist.
 
 ## Roadmap
 
 1. ✅ **Scaffold, configuration, database, authentication**
 2. ✅ **Real Shopify product list** (pagination, missing-description/tag flags, product review page with live facts)
 3. ✅ **AI generation and suggestion review** (structured output, server-side validation, side-by-side editable review)
-4. ⬜ Approved publishing (conflict check, error handling, duplicate-submit lock) and history
+4. ✅ **Approved publishing and history** (conflict check, GraphQL and userErrors handling, duplicate-submit lock, shop-scoped history, integration tests)
 5. ⬜ Verification, evaluation set, documentation, deployment guide
