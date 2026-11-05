@@ -12,8 +12,8 @@ include_config_on_deploy = true
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-# Phase 1-3 only read products. write_products is added in Phase 4 when publishing is implemented.
-scopes = "read_products"
+# read_products: product list and review. write_products: publishing approved descriptions and tags (Phase 4).
+scopes = "read_products,write_products"
 
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]
