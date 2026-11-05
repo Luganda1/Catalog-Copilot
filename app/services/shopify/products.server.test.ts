@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 
-import { getProduct, listProducts } from "./products.server";
+import { getProduct, listProducts, updateProduct } from "./products.server";
 
 /**
  * MOCKED Shopify client: these tests cover our request variables and response
@@ -102,5 +102,33 @@ describe("getProduct (mocked Admin API)", () => {
     const product = await getProduct(admin, "gid://shopify/Product/1");
     expect(product?.options).toEqual([{ name: "Size", values: ["S", "M"] }]);
     expect(product?.health).toEqual({ missingDescription: false, missingTags: false });
+  });
+});
+
+describe("updateProduct (mocked Admin API)", () => {
+  const update = { id: "gid://shopify/Product/1", tags: ["wool"] };
+
+  it("sends the update as the product input and returns the updated product", async () => {
+    const product = { id: update.id, descriptionHtml: "<p>x</p>", tags: ["wool"] };
+    const { admin, graphql } = mockAdmin({ data: { productUpdate: { product, userErrors: [] } } });
+
+    await expect(updateProduct(admin, update)).resolves.toEqual({ ok: true, product });
+    expect(graphql).toHaveBeenCalledWith(expect.stringContaining("productUpdate(product: $product)"), {
+      variables: { product: update },
+    });
+  });
+
+  it("treats userErrors as failure even though the HTTP response succeeded", async () => {
+    const userErrors = [{ field: ["tags"], message: "Tags are invalid" }];
+    const { admin } = mockAdmin({ data: { productUpdate: { product: { id: update.id }, userErrors } } });
+    await expect(updateProduct(admin, update)).resolves.toEqual({ ok: false, userErrors });
+  });
+
+  it.each([
+    ["no payload", { data: { productUpdate: null } }],
+    ["no product", { data: { productUpdate: { product: null, userErrors: [] } } }],
+  ])("treats %s as failure", async (_label, body) => {
+    const { admin } = mockAdmin(body);
+    await expect(updateProduct(admin, update)).resolves.toMatchObject({ ok: false });
   });
 });
