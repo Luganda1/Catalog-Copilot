@@ -1,4 +1,5 @@
 import { AnthropicProvider, DEFAULT_ANTHROPIC_MODEL } from "./anthropic.server";
+import { findUnsupportedClaims } from "./claims";
 import { MAX_DESCRIPTION_CHARS } from "./facts";
 import { DEFAULT_GROQ_MODEL, GroqProvider } from "./groq.server";
 import { MockProvider } from "./mock.server";
@@ -52,6 +53,14 @@ export async function generateSuggestion(
 ): Promise<GeneratedSuggestion> {
   const { raw, model } = await provider.generate(facts);
   const output = validateSuggestionOutput(raw);
+
+  // The prompt forbids invented claims, but models still slip; flag known claim words the facts don't support.
+  const unsupported = findUnsupportedClaims([output.description, ...output.tags].join("\n"), facts);
+  if (unsupported.length > 0) {
+    output.warnings.push(
+      `Check before publishing: the draft makes claims the product facts don't support (${unsupported.join(", ")}). Remove them or confirm they're true.`,
+    );
+  }
 
   if (options.descriptionTruncated) {
     output.warnings.push(

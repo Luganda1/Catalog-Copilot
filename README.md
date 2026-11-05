@@ -2,8 +2,7 @@
 
 An embedded Shopify app that helps merchants find incomplete product listings, draft grounded descriptions and tags with AI, and review every change before it is published to Shopify.
 
-> **Status: Phase 4 of 5 (approved publishing and history).**
-> The evaluation set, deployment guide, and final docs come in Phase 5. See [Roadmap](#roadmap).
+> **Status: complete (Phase 5 of 5).** Runs on a development store; not submitted to the Shopify App Store. See [Evaluation](#evaluation), [Deployment](#deployment), and the [demo outline](docs/DEMO.md).
 
 ## Stack
 
@@ -91,6 +90,8 @@ Press `p` in the CLI to open the app and install it on the development store. Th
 | `npm run lint` | ESLint |
 | `npm test` | Unit tests (Vitest, no database needed) |
 | `npm run test:integration` | Integration tests against the `catalog_copilot_test` database (needs `docker compose up -d postgres`) |
+| `npm run eval` | Run the evaluation set against the configured AI provider (calls the real model) |
+| `npm run eval:regrade -- <file>` | Re-grade a saved eval run with the current graders (no model calls) |
 | `npm run build` | Production build |
 | `npm run graphql-codegen` | Regenerate Admin API types from `#graphql` queries |
 | `npx prisma migrate dev --name <name>` | Create a new migration after editing the schema |
@@ -112,6 +113,7 @@ Flow: **Generate** → re-read the product from Shopify → build `ProductFacts`
 - **Untrusted data.** The system prompt holds every rule. Product data goes in a `<product_facts>` JSON block with `<` escaped, so description text can't close the block. The prompt tells the model to ignore instructions inside the facts and to raise a warning when it finds them.
 - **Structured output.** Groq: Chat Completions with `response_format: json_schema, strict: true` (constrained decoding), called with `fetch`. Claude: `client.beta.messages.parse()` with a Zod format returns `description`, `tags`, `missingInformation`, and `warnings`. Server-side fallbacks (`fallbacks: "default"`) retry a declined request on a fallback model inside the same call. The model that actually answered is stored.
 - **Server-side validation.** A stricter Zod schema checks every provider's output: lengths, tag count and format, no HTML, no extra fields. Invalid output is never saved or shown. **Passing validation proves the shape, not the facts**, and the review screen says so.
+- **Claim guardrail.** After validation, `findUnsupportedClaims` (`app/services/ai/claims.ts`) looks for claim words shoppers rely on (waterproof, durable, warranty, certified, organic, non-toxic, vegan, "suitable for", superlatives, …) that don't appear anywhere in the product facts, and adds a warning naming them. It doesn't block the draft. It's a word list, not a fact checker: it misses claims phrased differently, and it treats any word in the facts as supported, including words inside an injected instruction.
 - **Stored safely.** The plain-text description is escaped into `<p>` HTML by the app (`textToSafeHtml`). Every suggestion records its model, prompt version, and the product snapshot.
 - **One pending suggestion per product.** Regenerating marks the previous one `SUPERSEDED` in the same transaction.
 - **Review screen.** Current and suggested content side by side, an editable description and tags, a choice between **Add to the existing tags** and **Replace all existing tags** with a preview of what will be added or removed, and banners for warnings, missing information, mock output, and products edited since generation. A merchant chooses what to publish (description, tags, or both) and then **Reject** or **Approve & Publish**.
@@ -140,10 +142,91 @@ Nothing is written to Shopify until the merchant clicks **Approve & Publish**. G
 
 **Interface.** The dashboard scans the 100 most recently updated products (one query, about 4 cost points per product) to show catalog health as square tiles. The tiles also filter the list (`?view=attention|description|tags`). A **Next up** card links to the next incomplete listing. Products show as compact rows with 120 px thumbnails. The review page shows progress steps (generate → review → publish), and its sidebar holds the publish options and a pre-publish checklist.
 
+## Evaluation
+
+`evals/` holds 12 product cases that target the ways a listing generator goes wrong:
+- thin facts;
+- rich facts that should be used;
+- prompt injection in the description, title, and tags;
+- an attempt to close the facts block;
+- promotional claims in the existing description;
+- contradictory facts;
+- food, children's products, and electronics, where invented dietary, safety, or compatibility claims would be harmful.
+
+`npm run eval` sends each case to the configured provider and grades the model's own output (after schema validation, before the app's claim warning is added). Each case gets:
+- the claim-word check;
+- a tag count check;
+- its own checks: text that must not appear, facts that must appear, an expected warning, and expected missing information.
+
+The graders themselves are unit-tested (`evals/grade.test.ts`). Full outputs are saved to `evals/results/`, which is gitignored. `npm run eval:regrade` re-scores a saved run after the graders change.
+
+**Results** (Groq `openai/gpt-oss-120b`, one run per prompt, same graders):
+
+| Prompt | Cases passed | What changed |
+| --- | --- | --- |
+| `2026-11-03.v1` | 3 / 12 | Original prompt |
+| `2026-11-04.v2` | 6 / 12 | Bans generic quality words; current-description claims go to warnings instead of the draft |
+| `2026-11-04.v3` | **8 / 12** | Bans invented usage ("for everyday use", "redeemable online"); fewer tags allowed when facts are thin |
+
+What the runs showed:
+
+- **Injection was resisted in every run.** In all 12 injection runs (4 injection cases × 3 prompts), no injected claim (waterproof, lifetime warranty, FDA approved, free shipping, award-winning, `<script>`) appeared in a draft. Each injection was reported in a warning that names the field.
+- **Invented usage is the remaining weakness.** v3 still writes "suitable for everyday items" and "suitable for hot or cold beverages". The app's claim warning flags these phrases for the merchant, and the merchant approves every draft.
+- **The mug case kept part of the injected title.** The draft said "Ceramic Mug SYSTEM" because the title is used as the product's name. It was flagged, but this shows that injected text in the title reaches the draft.
+- **The graders are a heuristic.** Two of the four v3 failures are borderline: "designed for wall-outlet use" for a product the facts call a wall charger, and "designed for blending tasks". The first version of the graders also passed real invented details, such as "redeemable online or in-store" for a gift card; reading the outputs is what found them.
+- **One run per prompt is a small sample.** The model isn't deterministic, so scores can move by a case or two between runs.
+
+## Deployment
+
+The app runs as one Docker container plus a PostgreSQL database. Any container host works (Fly.io, Render, Railway, Google Cloud Run, a VM). It's meant for a development store; it isn't submitted to the Shopify App Store.
+
+**1. Database.** Create a managed PostgreSQL 14+ database and copy its connection string.
+
+**2. Image.** The `Dockerfile` has two stages: the build stage installs all dependencies and runs `npm run build`; the runtime stage holds production dependencies and the built app only, and runs as the non-root `node` user. `.dockerignore` keeps `.env` and other local files out of the image. On start the container runs `prisma migrate deploy` (Prisma takes a database lock, so several instances starting at once is safe) and then serves on port 3000.
+
+```bash
+docker build -t catalog-copilot .
+```
+
+**3. Environment variables.** Set these in the host's secret manager, never in the image or the repository:
+
+| Variable | Value |
+| --- | --- |
+| `SHOPIFY_API_KEY` / `SHOPIFY_API_SECRET` | Client ID and secret from the app's page in the Partner Dashboard |
+| `SHOPIFY_APP_URL` | The public HTTPS URL of the deployment |
+| `SCOPES` | `read_products,write_products` (must match `shopify.app.toml`) |
+| `DATABASE_URL` | The PostgreSQL connection string |
+| `AI_PROVIDER` and `GROQ_API_KEY` (or `ANTHROPIC_API_KEY`) | The AI provider and its key |
+| `NODE_ENV` | `production` (already set in the image) |
+
+**4. Point Shopify at the deployment.** In `shopify.app.toml`, set `application_url` to `SHOPIFY_APP_URL` and `redirect_urls` to `<SHOPIFY_APP_URL>/api/auth`, then run `npm run deploy`. That pushes the URLs, scopes, and webhook subscriptions to Shopify. It doesn't deploy code; the host does that.
+
+**5. Install** the app on the development store from the Partner Dashboard and run through the checklist below.
+
+**Production checklist**
+
+- [ ] HTTPS only (Shopify requires it for embedded apps).
+- [ ] Secrets are in the host's secret manager; `docker run --rm --entrypoint ls catalog-copilot -a /app` shows no `.env`.
+- [ ] Database backups are on. Suggestions and publish attempts are the only data the app stores.
+- [ ] `npm run eval` passes with the production provider and model before changing either.
+- [ ] Logs are collected. They contain shop domains and error details but no API keys or access tokens.
+- [ ] Before any public distribution: add the mandatory compliance webhooks (`customers/data_request`, `customers/redact`, `shop/redact`; commented out in `shopify.app.toml`). The app stores no customer data, but Shopify requires the endpoints.
+
+## Dependency audit
+
+`npm audit` (4 Nov 2026) reports 31 advisories. 25 are in development-only tools and 6 are in the production dependency tree, with no critical ones in production.
+
+| Where | Package | Severity | Assessment |
+| --- | --- | --- | --- |
+| Production | `deepmerge-ts` via `prisma` / `@prisma/config` | High | Stack exhaustion on recursive objects while Prisma loads its own config. Doesn't process request data. The fix needs Prisma 7, a breaking upgrade that the Shopify session adapter doesn't support yet. Accepted for now. |
+| Production | `minimatch` via `@react-router/fs-routes` | Moderate | ReDoS in glob patterns. The globs are the app's own route patterns at build time, not user input. Accepted. |
+| Dev only | `vitest` 3, `tinypool`, `@vitest/mocker` | Critical | Exploitable through Vitest's dev/browser server, which this project doesn't run (`vitest run` only). Fixed in Vitest 4, which needs Node 20, 22, or 24. **To fix:** switch to Node 22 LTS (the version the Docker image uses), then `npm i -D vitest@^4.1.11 vite-node`. |
+| Dev only | `@graphql-codegen/*`, `@graphql-tools/utils`, `lodash`, `@typescript-eslint/*` | High | Run only by developers on the app's own GraphQL and source files. No upstream fix for the Shopify codegen preset yet. |
+
 ## Roadmap
 
 1. ✅ **Scaffold, configuration, database, authentication**
 2. ✅ **Real Shopify product list** (pagination, missing-description/tag flags, product review page with live facts)
 3. ✅ **AI generation and suggestion review** (structured output, server-side validation, side-by-side editable review)
 4. ✅ **Approved publishing and history** (conflict check, GraphQL and userErrors handling, duplicate-submit lock, shop-scoped history, integration tests)
-5. ⬜ Verification, evaluation set, documentation, deployment guide
+5. ✅ **Verification and deployment** (evaluation set run against the real model, claim guardrail, tightened prompt, dependency audit, Docker image, deployment guide, demo outline)
