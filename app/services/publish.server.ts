@@ -72,6 +72,7 @@ export async function publishSuggestion(
     },
     data: {
       status: "PUBLISHING",
+      approvedTitle: decision.title,
       approvedDescriptionHtml,
       approvedTags: decision.tags ?? [],
       publishTags,
@@ -86,7 +87,8 @@ export async function publishSuggestion(
   });
 
   // Recorded on every attempt so the history shows what we tried to write.
-  let attempted: { descriptionHtml: string | null; tags: string[] } = {
+  let attempted: { title: string | null; descriptionHtml: string | null; tags: string[] } = {
+    title: decision.title,
     descriptionHtml: approvedDescriptionHtml,
     tags: [],
   };
@@ -102,6 +104,7 @@ export async function publishSuggestion(
           shopId,
           suggestionId,
           status,
+          title: attempted.title,
           descriptionHtml: attempted.descriptionHtml,
           tags: attempted.tags,
           errorMessage,
@@ -140,6 +143,7 @@ export async function publishSuggestion(
     }
 
     const update: ProductUpdate = { id: product.id };
+    if (decision.title !== null) update.title = decision.title;
     if (approvedDescriptionHtml !== null) update.descriptionHtml = approvedDescriptionHtml;
     if (decision.tags !== null) {
       update.tags = planTagChange(product.tags, decision.tags, decision.tagMode).finalTags;
@@ -148,7 +152,11 @@ export async function publishSuggestion(
         return { status: "failed", message: `A product can have at most ${MAX_PRODUCT_TAGS} tags.` };
       }
     }
-    attempted = { descriptionHtml: update.descriptionHtml ?? null, tags: update.tags ?? [] };
+    attempted = {
+      title: update.title ?? null,
+      descriptionHtml: update.descriptionHtml ?? null,
+      tags: update.tags ?? [],
+    };
 
     const result = await updateProduct(admin, update);
     if (!result.ok) {
@@ -183,6 +191,7 @@ export async function publishSuggestion(
         shopId,
         suggestionId,
         status: "SUCCEEDED",
+        title: attempted.title,
         descriptionHtml: attempted.descriptionHtml,
         tags: attempted.tags,
       },

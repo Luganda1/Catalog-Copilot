@@ -25,7 +25,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       return {
         id: row.id,
         productUrlId: productUrlId(row.productId),
-        title: row.sourceTitle,
+        // After a title change, show the product under its new name.
+        title: (row.status === "PUBLISHED" && row.approvedTitle) || row.sourceTitle,
         status: row.status,
         date: (row.publishedAt ?? row.decidedAt ?? row.updatedAt).toISOString(),
         changes: describeChanges(row),
@@ -41,12 +42,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 function describeChanges(row: {
   status: string;
+  approvedTitle: string | null;
   approvedDescriptionHtml: string | null;
   publishTags: boolean;
   tagMode: string | null;
 }) {
   if (row.status === "REJECTED") return "None";
   const parts = [];
+  if (row.approvedTitle !== null) parts.push("Title");
   if (row.approvedDescriptionHtml !== null) parts.push("Description");
   if (row.publishTags)
     parts.push(row.tagMode === "REPLACE" ? "Tags (replaced)" : "Tags (added)");

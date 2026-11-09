@@ -14,6 +14,8 @@ export interface ProductListItem {
   status: string;
   tags: string[];
   descriptionPreview: string;
+  /** ISO 8601 timestamp of the last change in Shopify. */
+  updatedAt: string;
   image: { url: string; altText: string | null } | null;
   health: ListingHealth;
 }
@@ -29,14 +31,15 @@ export interface ProductListPage {
 }
 
 const PRODUCTS_QUERY = `#graphql
-  query CatalogCopilotProducts($first: Int, $after: String, $last: Int, $before: String) {
-    products(first: $first, after: $after, last: $last, before: $before, sortKey: TITLE) {
+  query CatalogCopilotProducts($first: Int, $after: String, $last: Int, $before: String, $query: String) {
+    products(first: $first, after: $after, last: $last, before: $before, query: $query, sortKey: TITLE) {
       nodes {
         id
         title
         status
         tags
         description(truncateAt: 120)
+        updatedAt
         featuredMedia {
           preview {
             image {
@@ -61,6 +64,7 @@ interface ListNode {
   status: string;
   tags: string[];
   description: string;
+  updatedAt: string;
   featuredMedia?: {
     preview?: { image?: { url: string; altText?: string | null } | null } | null;
   } | null;
@@ -74,16 +78,24 @@ function toListItem(node: ListNode): ProductListItem {
     status: node.status,
     tags: node.tags,
     descriptionPreview: node.description,
+    updatedAt: node.updatedAt,
     image: image ? { url: image.url, altText: image.altText ?? null } : null,
     health: assessListing({ description: node.description, tags: node.tags }),
   };
 }
 
+/**
+ * One page of products sorted by title. `query` is Shopify search syntax
+ * (built by `titleSearchQuery`); null lists every product.
+ */
 export async function listProducts(
   admin: AdminApiContext,
   page: PageArgs,
+  query: string | null = null,
 ): Promise<ProductListPage> {
-  const response = await admin.graphql(PRODUCTS_QUERY, { variables: page });
+  const response = await admin.graphql(PRODUCTS_QUERY, {
+    variables: { ...page, query },
+  });
   const { data } = await response.json();
   const connection = data?.products;
   if (!connection) {
@@ -124,6 +136,7 @@ const CATALOG_SCAN_QUERY = `#graphql
         status
         tags
         description(truncateAt: 120)
+        updatedAt
         featuredMedia {
           preview {
             image {
@@ -242,13 +255,14 @@ export async function getProduct(
 export interface ProductUpdate {
   id: string;
   /** Omitted fields are left unchanged in Shopify. */
+  title?: string;
   descriptionHtml?: string;
   /** The product's complete tag list after the update (Shopify replaces tags as a whole). */
   tags?: string[];
 }
 
 export type ProductUpdateResult =
-  | { ok: true; product: { id: string; descriptionHtml: string; tags: string[] } }
+  | { ok: true; product: { id: string; title: string; descriptionHtml: string; tags: string[] } }
   | { ok: false; userErrors: { field: string[] | null; message: string }[] };
 
 const PRODUCT_UPDATE_MUTATION = `#graphql
@@ -256,6 +270,7 @@ const PRODUCT_UPDATE_MUTATION = `#graphql
     productUpdate(product: $product) {
       product {
         id
+        title
         descriptionHtml
         tags
       }

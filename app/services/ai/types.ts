@@ -1,3 +1,5 @@
+import type { TitleFormat } from "../../lib/title-format";
+
 /**
  * The only product information the AI is allowed to use. Built from a live
  * Shopify read; nothing else (store settings, other products, the web) is sent.
@@ -12,8 +14,17 @@ export interface ProductFacts {
   options: { name: string; values: string[] }[];
 }
 
+/** What a provider is asked to draft. */
+export interface GenerationRequest {
+  facts: ProductFacts;
+  /** The shop's title format; null means don't suggest a title. */
+  titleFormat: TitleFormat | null;
+}
+
 /** A suggestion that passed server-side validation. Plain text; converted to HTML only when stored. */
 export interface ValidatedSuggestion {
+  /** Null when no title was requested or the suggested title failed validation. */
+  title: string | null;
   description: string;
   tags: string[];
   missingInformation: string[];
@@ -29,7 +40,7 @@ export interface ProviderResult {
 
 export interface AiProvider {
   readonly name: string;
-  generate(facts: ProductFacts): Promise<ProviderResult>;
+  generate(request: GenerationRequest): Promise<ProviderResult>;
 }
 
 export type AiErrorCode =

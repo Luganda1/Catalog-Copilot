@@ -36,6 +36,8 @@ export async function createSuggestion({
         sourceTitle: product.title,
         sourceDescriptionHtml: product.descriptionHtml,
         sourceTags: product.tags,
+        aiTitle: generated.output.title,
+        titleTemplate: generated.titleTemplate,
         aiDescriptionHtml: textToSafeHtml(generated.output.description),
         aiTags: generated.output.tags,
         missingInfo: generated.output.missingInformation,

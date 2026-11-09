@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { buildUserMessage, SYSTEM_PROMPT } from "./prompt";
 import { ModelOutputSchema } from "./schema";
-import { AiError, type AiProvider, type ProductFacts, type ProviderResult } from "./types";
+import { AiError, type AiProvider, type GenerationRequest, type ProviderResult } from "./types";
 
 // Groq exposes an OpenAI-compatible Chat Completions API. We call it with fetch
 // rather than adding another SDK: it's one endpoint and the response is small.
@@ -33,7 +33,7 @@ export class GroqProvider implements AiProvider {
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
-  async generate(facts: ProductFacts): Promise<ProviderResult> {
+  async generate({ facts, titleFormat }: GenerationRequest): Promise<ProviderResult> {
     let response: Response;
     try {
       response = await this.fetchImpl(GROQ_API_URL, {
@@ -46,7 +46,7 @@ export class GroqProvider implements AiProvider {
           model: this.model,
           messages: [
             { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: buildUserMessage(facts) },
+            { role: "user", content: buildUserMessage(facts, titleFormat) },
           ],
           response_format: {
             type: "json_schema",

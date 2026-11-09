@@ -43,6 +43,11 @@ model Shop {
   createdAt     DateTime  @default(now())
   uninstalledAt DateTime?
 
+  // Merchant-set title format, e.g. "{Brand} {Product type} – {Key detail}".
+  // Null means title suggestions are off. Validated by app/lib/title-format.ts.
+  titleTemplate  String?
+  titleMaxLength Int     @default(70)
+
   suggestions     Suggestion[]
   publishAttempts PublishAttempt[]
 }
@@ -74,6 +79,10 @@ model Suggestion {
   sourceTags            String[]
 
   // --- Validated AI output.
+  // Null when the shop had no title format set, or the suggested title failed validation.
+  aiTitle           String?
+  // The title format the title was generated for, kept for review and history.
+  titleTemplate     String?
   aiDescriptionHtml String
   aiTags            String[]
   missingInfo       String[]
@@ -83,6 +92,7 @@ model Suggestion {
 
   // --- Merchant decision. Null until the merchant approves.
   // A null approved field means "do not change this field in Shopify".
+  approvedTitle           String?
   approvedDescriptionHtml String?
   approvedTags            String[]
   publishTags             Boolean  @default(false)
@@ -118,7 +128,8 @@ model PublishAttempt {
   suggestion   Suggestion @relation(fields: [suggestionId, shopId], references: [id, shopId], onDelete: Cascade)
 
   status          PublishAttemptStatus
-  // What we attempted to write (null description = description not changed).
+  // What we attempted to write (null title/description = not changed).
+  title           String?
   descriptionHtml String?
   tags            String[]
   errorMessage    String?

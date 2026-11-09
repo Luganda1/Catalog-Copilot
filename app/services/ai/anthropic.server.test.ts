@@ -32,7 +32,7 @@ describe("AnthropicProvider (mocked client)", () => {
       parsed_output: output,
       model: "claude-opus-5-5",
     });
-    await expect(provider.generate(facts)).resolves.toEqual({ raw: output, model: "claude-opus-5-5" });
+    await expect(provider.generate({ facts, titleFormat: null })).resolves.toEqual({ raw: output, model: "claude-opus-5-5" });
 
     const request = (parse.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
     expect(request.model).toBe("claude-opus-5-5");
@@ -46,7 +46,7 @@ describe("AnthropicProvider (mocked client)", () => {
     ["unparseable output", { stop_reason: "end_turn", parsed_output: null, model: "m" }, "invalid_output"],
   ])("maps %s to an AiError", async (_label, response, code) => {
     const { provider } = providerReturning(response);
-    await expect(provider.generate(facts)).rejects.toMatchObject({ code });
+    await expect(provider.generate({ facts, titleFormat: null })).rejects.toMatchObject({ code });
   });
 
   it("maps an SDK parse exception to invalid_output", async () => {
@@ -55,6 +55,6 @@ describe("AnthropicProvider (mocked client)", () => {
     });
     const client = { beta: { messages: { parse } } } as unknown as Anthropic;
     const provider = new AnthropicProvider("k", "claude-opus-5-5", client);
-    await expect(provider.generate(facts)).rejects.toMatchObject({ code: "invalid_output" });
+    await expect(provider.generate({ facts, titleFormat: null })).rejects.toMatchObject({ code: "invalid_output" });
   });
 });

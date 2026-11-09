@@ -50,6 +50,26 @@ describe("buildUserMessage", () => {
   });
 });
 
+describe("buildUserMessage title format", () => {
+  const facts = buildProductFacts(product).facts;
+
+  it("asks for a null title when no format is set", () => {
+    const message = buildUserMessage(facts);
+    expect(message).toContain("return null for the title");
+    expect(message).not.toContain("<title_format>");
+  });
+
+  it("sends the format with help for only the placeholders it uses", () => {
+    const message = buildUserMessage(facts, { template: "{Brand} {Product name}", maxLength: 60 });
+    const json = message.split("<title_format>\n")[1].split("\n</title_format>")[0];
+    const format = JSON.parse(json);
+    expect(format).toMatchObject({ template: "{Brand} {Product name}", maxLength: 60 });
+    expect(Object.keys(format.placeholders)).toEqual(["Brand", "Product name"]);
+    // The format block comes after the facts block, never inside it.
+    expect(message.indexOf("<title_format>")).toBeGreaterThan(message.indexOf("</product_facts>"));
+  });
+});
+
 describe("SYSTEM_PROMPT", () => {
   it("states the grounding and untrusted-data rules", () => {
     expect(SYSTEM_PROMPT).toContain("Use only the facts");

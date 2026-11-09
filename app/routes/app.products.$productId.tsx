@@ -14,7 +14,8 @@ import { productGidFromUrlId } from "../lib/product-id";
 import { parseDecision } from "../lib/decision";
 import { productChangedSince } from "../lib/snapshot";
 import { parseTagInput, planTagChange, type TagMode } from "../lib/tags";
-import { getOrCreateShop } from "../models/shop.server";
+import type { TitleFormat } from "../lib/title-format";
+import { getOrCreateShop, titleFormatOf } from "../models/shop.server";
 import {
   createSuggestion,
   getPendingSuggestion,
@@ -35,6 +36,10 @@ import {
 
 interface SuggestionView {
   id: string;
+  /** Null when the draft has no title suggestion. */
+  title: string | null;
+  /** The title format the title was generated for. */
+  titleTemplate: string | null;
   descriptionText: string;
   tags: string[];
   missingInfo: string[];
@@ -48,7 +53,13 @@ interface SuggestionView {
 }
 
 type LoaderData =
-  | { state: "ok"; product: ProductDetail; suggestion: SuggestionView | null }
+  | {
+      state: "ok";
+      product: ProductDetail;
+      suggestion: SuggestionView | null;
+      /** The shop's current title format; null when title suggestions are off. */
+      titleFormat: TitleFormat | null;
+    }
   | { state: "not-found" }
   | { state: "error"; message: string };
 
@@ -82,8 +93,11 @@ export const loader = async ({
   return {
     state: "ok",
     product,
+    titleFormat: titleFormatOf(shop),
     suggestion: pending && {
       id: pending.id,
+      title: pending.aiTitle,
+      titleTemplate: pending.titleTemplate,
       descriptionText: safeHtmlToText(pending.aiDescriptionHtml),
       tags: pending.aiTags,
       missingInfo: pending.missingInfo,
@@ -137,13 +151,14 @@ export const action = async ({
     if (!product)
       return { intent: "generate", ok: false, error: "Product not found." };
 
+    const shop = await getOrCreateShop(session.shop);
     const provider = getAiProvider();
     const { facts, truncated } = buildProductFacts(product);
     const generated = await generateSuggestion(provider, facts, {
       descriptionTruncated: truncated,
+      titleFormat: titleFormatOf(shop),
     });
 
-    const shop = await getOrCreateShop(session.shop);
     await createSuggestion({ shopId: shop.id, product, generated });
     return { intent: "generate", ok: true };
   } catch (error) {
@@ -193,6 +208,16 @@ function NoteList({ items }: { items: string[] }) {
         <s-list-item key={item}>{item}</s-list-item>
       ))}
     </s-unordered-list>
+  );
+}
+
+/** One label/value pair in a two-column grid. */
+function Fact({ label, children }: { label: string; children: string }) {
+  return (
+    <>
+      <s-text color="subdued">{label}</s-text>
+      <s-text type="strong">{children}</s-text>
+    </>
   );
 }
 
@@ -260,11 +285,13 @@ function Steps({ current }: { current: Step | "done" }) {
 type FieldEvent = { currentTarget: EventTarget | null };
 const fieldValue = (event: FieldEvent) =>
   (event.currentTarget as HTMLElement & { value: string }).value;
+const fieldChecked = (event: FieldEvent) =>
+  (event.currentTarget as HTMLElement & { checked: boolean }).checked;
 
 // Two equal columns when there's room, stacked otherwise.
 const COMPARE_COLUMNS = "@container (inline-size > 600px) 1fr 1fr, 1fr";
-
-type PublishScope = "both" | "description" | "tags";
+// Tag input takes the wider share; the mode select sits beside it.
+const TAG_FIELD_COLUMNS = "@container (inline-size > 600px) 2fr 1fr, 1fr";
 
 type DecisionFetcher = ReturnType<typeof useFetcher<typeof action>>;
 
@@ -275,23 +302,35 @@ type DecisionFetcher = ReturnType<typeof useFetcher<typeof action>>;
 function SuggestionReview({
   product,
   suggestion,
+  titleFormat,
   generateButton,
   decisionFetcher,
 }: {
   product: ProductDetail;
   suggestion: SuggestionView;
+  titleFormat: TitleFormat | null;
   generateButton: React.ReactNode;
   decisionFetcher: DecisionFetcher;
 }) {
+  const [title, setTitle] = useState(suggestion.title ?? "");
   const [description, setDescription] = useState(suggestion.descriptionText);
   const [tagInput, setTagInput] = useState(suggestion.tags.join(", "));
   const [tagMode, setTagMode] = useState<TagMode>("ADD");
-  const [scope, setScope] = useState<PublishScope>("both");
+  const hasTitle = suggestion.title !== null;
+  // A suggested title that matches the current one has nothing to publish.
+  const [includeTitle, setIncludeTitle] = useState(
+    hasTitle && suggestion.title !== product.title,
+  );
+  const [includeDescription, setIncludeDescription] = useState(true);
+  const [includeTags, setIncludeTags] = useState(true);
 
   const tagPlan = planTagChange(product.tags, parseTagInput(tagInput), tagMode);
   const descriptionEdited = description.trim() !== suggestion.descriptionText;
-  const includeDescription = scope !== "tags";
-  const includeTags = scope !== "description";
+  const cleanTitle = title.replace(/\s+/g, " ").trim();
+  const titleEdited = hasTitle && cleanTitle !== suggestion.title;
+  const titleLimit = titleFormat?.maxLength ?? null;
+  const titleTooLong = titleLimit !== null && cleanTitle.length > titleLimit;
+  const nothingSelected = !includeTitle && !includeDescription && !includeTags;
 
   const deciding = decisionFetcher.state !== "idle";
   const pendingIntent = deciding
@@ -307,6 +346,8 @@ function SuggestionReview({
       {
         intent,
         suggestionId: suggestion.id,
+        title,
+        includeTitle: String(includeTitle),
         description,
         tags: tagInput,
         tagMode,
@@ -341,75 +382,124 @@ function SuggestionReview({
           </s-banner>
         )}
 
-        <s-section heading="Description">
-          <s-query-container>
-            <s-grid gridTemplateColumns={COMPARE_COLUMNS} gap="base">
-              <s-box padding="base" borderRadius="base" background="subdued">
-                <s-stack direction="block" gap="small-200">
-                  <s-text color="subdued">Current</s-text>
-                  {product.health.missingDescription ? (
-                    <s-text color="subdued">No description yet.</s-text>
-                  ) : (
-                    <s-paragraph>{product.description}</s-paragraph>
-                  )}
+        <s-section>
+          <s-stack direction="block" gap="base">
+            <s-stack
+              direction="inline"
+              gap="base"
+              alignItems="center"
+              justifyContent="space-between"
+            >
+              <s-stack direction="block" gap="small-500">
+                <s-heading>Title</s-heading>
+                <s-text color="subdued">
+                  {hasTitle
+                    ? `Follows your format: ${suggestion.titleTemplate}`
+                    : titleFormat
+                      ? "This draft has no title suggestion. Generate a new draft to get one in your format."
+                      : "Title suggestions are off."}
+                </s-text>
+              </s-stack>
+              {generateButton}
+            </s-stack>
+            {hasTitle ? (
+              <s-query-container>
+                <s-grid gridTemplateColumns={COMPARE_COLUMNS} gap="small">
+                  <s-stack direction="inline" gap="small-200" alignItems="center">
+                    <s-badge>Current</s-badge>
+                  </s-stack>
+                  <s-stack direction="inline" gap="small-200" alignItems="center">
+                    <s-badge tone="info" icon="wand">
+                      AI draft
+                    </s-badge>
+                    {titleEdited && <s-badge>Edited by you</s-badge>}
+                    {!titleEdited && suggestion.title === product.title && (
+                      <s-badge tone="success">Already matches</s-badge>
+                    )}
+                  </s-stack>
+                  <s-box padding="small" borderRadius="base" background="subdued">
+                    <s-text>{product.title}</s-text>
+                  </s-box>
+                  <s-text-field
+                    label="Suggested title"
+                    labelAccessibilityVisibility="exclusive"
+                    defaultValue={suggestion.title ?? ""}
+                    details={
+                      titleLimit === null
+                        ? `${cleanTitle.length} characters`
+                        : `${cleanTitle.length} of ${titleLimit} characters`
+                    }
+                    {...(titleTooLong
+                      ? { error: `Longer than your ${titleLimit}-character limit.` }
+                      : {})}
+                    onInput={(event) => setTitle(fieldValue(event))}
+                  />
+                </s-grid>
+              </s-query-container>
+            ) : (
+              !titleFormat && (
+                <s-text color="subdued">
+                  <Link to="/app/settings">Set a title format</Link> to get
+                  title suggestions that give your products one consistent
+                  shape.
+                </s-text>
+              )
+            )}
+          </s-stack>
+        </s-section>
+
+        <s-section>
+          <s-stack direction="block" gap="base">
+            <s-stack direction="block" gap="small-500">
+              <s-heading>Description</s-heading>
+              <s-text color="subdued">
+                Edit the draft on the right. Generating a new draft discards
+                your edits.
+              </s-text>
+            </s-stack>
+            <s-query-container>
+              {/* Labels share one grid row, so the two boxes below always line up and match in height. */}
+              <s-grid gridTemplateColumns={COMPARE_COLUMNS} gap="small">
+                <s-stack direction="inline" gap="small-200" alignItems="center">
+                  <s-badge>Current</s-badge>
                 </s-stack>
-              </s-box>
-              <s-stack direction="block" gap="small-200">
                 <s-stack direction="inline" gap="small-200" alignItems="center">
                   <s-badge tone="info" icon="wand">
                     AI draft
                   </s-badge>
                   {descriptionEdited && <s-badge>Edited by you</s-badge>}
                 </s-stack>
+                <s-box padding="base" borderRadius="base" background="subdued">
+                  {product.health.missingDescription ? (
+                    <s-text color="subdued">No description yet.</s-text>
+                  ) : (
+                    <s-paragraph>{product.description}</s-paragraph>
+                  )}
+                </s-box>
                 <s-text-area
                   label="Suggested description"
                   labelAccessibilityVisibility="exclusive"
                   details="Plain text. Separate paragraphs with a blank line."
-                  rows={12}
+                  rows={10}
                   defaultValue={suggestion.descriptionText}
                   onInput={(event) => setDescription(fieldValue(event))}
                 />
-              </s-stack>
-            </s-grid>
-          </s-query-container>
-        </s-section>
-
-        <s-section heading="Tags">
-          <s-stack direction="block" gap="base">
-            <s-query-container>
-              <s-grid gridTemplateColumns={COMPARE_COLUMNS} gap="base">
-                <s-box padding="base" borderRadius="base" background="subdued">
-                  <s-stack direction="block" gap="small-200">
-                    <s-text color="subdued">Current</s-text>
-                    <TagChips tags={product.tags} empty="No tags yet." />
-                  </s-stack>
-                </s-box>
-                <s-stack direction="block" gap="base">
-                  <s-text-field
-                    label="Suggested tags"
-                    details="Separate tags with commas."
-                    defaultValue={suggestion.tags.join(", ")}
-                    onInput={(event) => setTagInput(fieldValue(event))}
-                  />
-                  <s-select
-                    label="How to apply tags"
-                    value={tagMode}
-                    onInput={(event) =>
-                      setTagMode(fieldValue(event) as TagMode)
-                    }
-                  >
-                    <s-option value="ADD">Add to the existing tags</s-option>
-                    <s-option value="REPLACE">
-                      Replace all existing tags
-                    </s-option>
-                  </s-select>
-                </s-stack>
               </s-grid>
             </s-query-container>
+          </s-stack>
+        </s-section>
 
-            <s-box padding="base" border="base" borderRadius="base">
-              <s-stack direction="block" gap="small-200">
-                <s-text type="strong">Tags after publishing</s-text>
+        <s-section>
+          <s-stack direction="block" gap="base">
+            <s-stack direction="block" gap="small-500">
+              <s-heading>Tags</s-heading>
+              <s-text color="subdued">
+                What the product&apos;s tags will be after publishing.
+              </s-text>
+            </s-stack>
+
+            <s-box padding="base" borderRadius="base" background="subdued">
+              <s-stack direction="block" gap="small">
                 {tagPlan.finalTags.length === 0 ? (
                   <s-text color="subdued">
                     The product will have no tags.
@@ -424,15 +514,6 @@ function SuggestionReview({
                         {tag}
                       </s-badge>
                     ))}
-                  </s-stack>
-                )}
-                {tagPlan.removed.length > 0 && (
-                  <s-stack
-                    direction="inline"
-                    gap="small-200"
-                    alignItems="center"
-                  >
-                    <s-text tone="critical">Removing:</s-text>
                     {tagPlan.removed.map((tag) => (
                       <s-badge key={tag} tone="critical" icon="minus">
                         {tag}
@@ -440,13 +521,54 @@ function SuggestionReview({
                     ))}
                   </s-stack>
                 )}
+                <s-text color="subdued">
+                  {[
+                    `${kept.length} kept`,
+                    `${tagPlan.added.length} added`,
+                    `${tagPlan.removed.length} removed`,
+                  ].join(" · ")}
+                </s-text>
               </s-stack>
             </s-box>
+
+            <s-query-container>
+              <s-grid gridTemplateColumns={TAG_FIELD_COLUMNS} gap="base">
+                <s-text-field
+                  label="Suggested tags"
+                  details="Separate tags with commas."
+                  defaultValue={suggestion.tags.join(", ")}
+                  onInput={(event) => setTagInput(fieldValue(event))}
+                />
+                <s-select
+                  label="How to apply tags"
+                  value={tagMode}
+                  onInput={(event) => setTagMode(fieldValue(event) as TagMode)}
+                >
+                  <s-option value="ADD">Add to the existing tags</s-option>
+                  <s-option value="REPLACE">Replace all existing tags</s-option>
+                </s-select>
+              </s-grid>
+            </s-query-container>
           </s-stack>
         </s-section>
+
+        {suggestion.missingInfo.length > 0 && (
+          <s-section>
+            <s-stack direction="block" gap="small">
+              <s-stack direction="block" gap="small-500">
+                <s-heading>Shoppers may also look for</s-heading>
+                <s-text color="subdued">
+                  Not in your product data, so the AI didn&apos;t add it. Add it
+                  yourself if you know it.
+                </s-text>
+              </s-stack>
+              <NoteList items={suggestion.missingInfo} />
+            </s-stack>
+          </s-section>
+        )}
       </s-stack>
 
-      <s-section slot="aside" heading="Publish">
+      <s-section slot="aside" heading="Review and publish">
         <s-stack direction="block" gap="base">
           {outcome &&
             outcome.status !== "published" &&
@@ -459,40 +581,63 @@ function SuggestionReview({
               </s-banner>
             )}
 
-          <s-select
-            label="What to publish"
-            value={scope}
-            onInput={(event) => setScope(fieldValue(event) as PublishScope)}
-          >
-            <s-option value="both">Description and tags</s-option>
-            <s-option value="description">Description only</s-option>
-            <s-option value="tags">Tags only</s-option>
-          </s-select>
+          {/* Warnings sit next to the buttons so they're read before approving. */}
+          {suggestion.warnings.length > 0 ? (
+            <s-banner
+              tone="warning"
+              heading={`Check ${suggestion.warnings.length} warning${suggestion.warnings.length === 1 ? "" : "s"}`}
+            >
+              <NoteList items={suggestion.warnings} />
+            </s-banner>
+          ) : (
+            <s-text color="subdued">
+              No warnings. AI drafts can still be wrong: the app checks the
+              format, not the facts.
+            </s-text>
+          )}
 
-          <s-unordered-list>
-            {includeDescription && (
-              <s-list-item>
-                The description will be replaced with your draft.
-              </s-list-item>
+          <s-stack direction="block" gap="small-200">
+            <s-text type="strong">What to publish</s-text>
+            {hasTitle && (
+              <s-checkbox
+                label="Title"
+                details={
+                  includeTitle ? `Becomes "${cleanTitle}".` : "Stays as it is."
+                }
+                {...(includeTitle ? { defaultChecked: true } : {})}
+                onChange={(event) => setIncludeTitle(fieldChecked(event))}
+              />
             )}
-            {includeTags && (
-              <s-list-item>
-                {tagMode === "ADD"
-                  ? `${tagPlan.added.length} tag${tagPlan.added.length === 1 ? "" : "s"} will be added.`
-                  : `Tags will be replaced (${tagPlan.removed.length} removed).`}
-              </s-list-item>
-            )}
-            <s-list-item>
-              Nothing changes in Shopify until you approve.
-            </s-list-item>
-          </s-unordered-list>
+            <s-checkbox
+              label="Description"
+              details={
+                includeDescription
+                  ? "Replaced with your draft."
+                  : "Stays as it is."
+              }
+              defaultChecked
+              onChange={(event) => setIncludeDescription(fieldChecked(event))}
+            />
+            <s-checkbox
+              label="Tags"
+              details={
+                !includeTags
+                  ? "Stay as they are."
+                  : tagMode === "ADD"
+                    ? `${tagPlan.added.length} tag${tagPlan.added.length === 1 ? "" : "s"} added.`
+                    : `Replaced (${tagPlan.removed.length} removed).`
+              }
+              defaultChecked
+              onChange={(event) => setIncludeTags(fieldChecked(event))}
+            />
+          </s-stack>
 
           <s-button
             variant="primary"
             icon="check"
             // Both buttons are disabled while either request is in flight; the server
             // also locks the suggestion, so a second submission can't publish twice.
-            {...(deciding || suggestion.sourceChanged
+            {...(deciding || suggestion.sourceChanged || nothingSelected
               ? { disabled: true }
               : {})}
             {...(pendingIntent === "publish" ? { loading: true } : {})}
@@ -509,43 +654,14 @@ function SuggestionReview({
           >
             Reject draft
           </s-button>
-          {suggestion.sourceChanged && (
-            <s-text color="subdued">
-              Publishing is turned off because the product changed in Shopify.
-            </s-text>
-          )}
-
-          <s-divider />
-          {generateButton}
           <s-text color="subdued">
-            Generating again replaces this draft and discards your edits.
+            {suggestion.sourceChanged
+              ? "Publishing is turned off because the product changed in Shopify."
+              : nothingSelected
+                ? "Choose at least one change to publish."
+                : "Nothing changes in Shopify until you approve."}
           </s-text>
-        </s-stack>
-      </s-section>
-
-      <s-section slot="aside" heading="Check before publishing">
-        <s-stack direction="block" gap="base">
-          <s-paragraph>
-            <s-text color="subdued">
-              AI drafts can be wrong. The app checks the format, not the facts.
-              Make sure every claim is true for your product.
-            </s-text>
-          </s-paragraph>
-          {suggestion.warnings.length > 0 && (
-            <s-banner tone="warning" heading="Warnings">
-              <NoteList items={suggestion.warnings} />
-            </s-banner>
-          )}
-          {suggestion.missingInfo.length > 0 && (
-            <s-stack direction="block" gap="small-200">
-              <s-text type="strong">Shoppers may also look for</s-text>
-              <s-text color="subdued">
-                Not in your product data, so the AI didn&apos;t add it. Add it
-                yourself if you know it.
-              </s-text>
-              <NoteList items={suggestion.missingInfo} />
-            </s-stack>
-          )}
+          <s-divider />
           <s-text color="subdued">
             Drafted {new Date(suggestion.createdAt).toLocaleString()} by{" "}
             {suggestion.aiModel} · prompt {suggestion.promptVersion}
@@ -595,7 +711,7 @@ export default function ProductReview() {
     );
   }
 
-  const { product, suggestion } = data;
+  const { product, suggestion, titleFormat } = data;
   const { health } = product;
   const generationError =
     !isGenerating && fetcher.data?.intent === "generate" && !fetcher.data.ok
@@ -627,7 +743,7 @@ export default function ProductReview() {
   );
 
   return (
-    <s-page heading={product.title}>
+    <s-page heading="Review listing">
       <s-stack direction="block" gap="base">
         <BackLink />
 
@@ -635,11 +751,12 @@ export default function ProductReview() {
           <s-stack direction="block" gap="base">
             <s-stack direction="inline" gap="base" alignItems="center">
               <s-thumbnail
-                size="base"
+                size="large"
                 alt={product.image?.altText || product.title}
                 {...(product.image ? { src: product.image.url } : {})}
               />
-              <s-stack direction="block" gap="small-300">
+              <s-stack direction="block" gap="small-200">
+                <s-heading>{product.title}</s-heading>
                 <s-text color="subdued">
                   {[product.vendor, product.productType]
                     .filter(Boolean)
@@ -695,6 +812,7 @@ export default function ProductReview() {
           key={suggestion.id}
           product={product}
           suggestion={suggestion}
+          titleFormat={titleFormat}
           generateButton={generateButton}
           decisionFetcher={decisionFetcher}
         />
@@ -708,8 +826,9 @@ export default function ProductReview() {
                 : "Draft a complete listing"}
             </s-heading>
             <s-paragraph>
-              Copilot writes a description and tags using only the product facts
-              in the sidebar. It won&apos;t invent features, materials,
+              Copilot writes a description and tags
+              {titleFormat ? ", plus a title in your format," : ""} using only
+              the product facts in the sidebar. It won&apos;t invent features, materials,
               certifications, or warranties. You review and edit everything
               before anything is published.
             </s-paragraph>
@@ -723,33 +842,36 @@ export default function ProductReview() {
         </s-section>
       )}
 
-
       <s-section slot="aside" heading="Facts the AI can use">
-        <s-stack direction="block" gap="small-200">
-          <s-text>
-            <s-text type="strong">Type:</s-text>{" "}
-            {product.productType || "Not set"}
-          </s-text>
-          <s-text>
-            <s-text type="strong">Vendor:</s-text> {product.vendor || "Not set"}
-          </s-text>
-          {product.options
-            .filter((option) => option.name !== "Title")
-            .map((option) => (
-              <s-text key={option.name}>
-                <s-text type="strong">{option.name}:</s-text>{" "}
-                {option.values.join(", ")}
-              </s-text>
-            ))}
-          <s-text>
-            <s-text type="strong">Tags:</s-text>{" "}
-            {product.tags.length ? product.tags.join(", ") : "None"}
-          </s-text>
-          {/* Plain text (Shopify's HTML-stripped field) so merchant HTML is never rendered unsanitized. */}
-          <s-text type="strong">Current description:</s-text>
+        <s-stack direction="block" gap="base">
           <s-text color="subdued">
-            {health.missingDescription ? "None" : product.description}
+            Drafts use only these fields. Edit them in Shopify to give the AI
+            more to work with.
           </s-text>
+          <s-grid gridTemplateColumns="auto 1fr" gap="small" alignItems="start">
+            <Fact label="Type">{product.productType || "Not set"}</Fact>
+            <Fact label="Vendor">{product.vendor || "Not set"}</Fact>
+            {product.options
+              .filter((option) => option.name !== "Title")
+              .map((option) => (
+                <Fact key={option.name} label={option.name}>
+                  {option.values.join(", ")}
+                </Fact>
+              ))}
+          </s-grid>
+          <s-stack direction="block" gap="small-200">
+            <s-text color="subdued">Tags</s-text>
+            <TagChips tags={product.tags} empty="None" />
+          </s-stack>
+          {/* Without a draft, the current description isn't shown anywhere else. Plain text, never rendered as HTML. */}
+          {!suggestion && (
+            <s-stack direction="block" gap="small-200">
+              <s-text color="subdued">Description</s-text>
+              <s-text>
+                {health.missingDescription ? "None" : product.description}
+              </s-text>
+            </s-stack>
+          )}
         </s-stack>
       </s-section>
     </s-page>

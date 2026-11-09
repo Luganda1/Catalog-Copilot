@@ -49,6 +49,26 @@ describe("validateSuggestionOutput", () => {
     expectInvalid(raw);
   });
 
+  it("only keeps a title when a title format is given", () => {
+    const withTitle = { ...valid, title: "Acme   Heated\nJacket" };
+    expect(validateSuggestionOutput(withTitle).title).toBeNull();
+    expect(validateSuggestionOutput(withTitle, { template: "{Brand}", maxLength: 70 }).title).toBe(
+      "Acme Heated Jacket",
+    );
+  });
+
+  it.each([
+    ["missing", undefined, "didn't return one"],
+    ["empty", "  ", "didn't return one"],
+    ["HTML", "<b>Acme</b>", "contained HTML"],
+    ["too long", "x".repeat(71), "71 characters"],
+  ])("leaves out a %s title with a warning instead of failing", (_label, title, reason) => {
+    const output = validateSuggestionOutput({ ...valid, title }, { template: "{Brand}", maxLength: 70 });
+    expect(output.title).toBeNull();
+    expect(output.description).toBe(valid.description);
+    expect(output.warnings).toEqual([expect.stringContaining(reason)]);
+  });
+
   it("does not echo raw output in the merchant-facing message", () => {
     try {
       validateSuggestionOutput({ ...valid, description: "<img src=x onerror=alert(1)>" });

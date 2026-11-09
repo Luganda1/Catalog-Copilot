@@ -1,3 +1,4 @@
+import { checkTitleFormat } from "../app/lib/title-format";
 import { findUnsupportedClaims } from "../app/services/ai/claims";
 import type { ValidatedSuggestion } from "../app/services/ai/types";
 import type { EvalCase } from "./cases";
@@ -16,7 +17,9 @@ export function gradeSuggestion(
   evalCase: EvalCase,
   output: ValidatedSuggestion,
 ): Check[] {
-  const content = [output.description, ...output.tags].join("\n");
+  const content = [output.title ?? "", output.description, ...output.tags].join(
+    "\n",
+  );
   const lower = content.toLowerCase();
   const checks: Check[] = [];
 
@@ -68,6 +71,31 @@ export function gradeSuggestion(
     checks.push({
       name: "lists missing information",
       pass: output.missingInformation.length > 0,
+    });
+  }
+
+  if (evalCase.titleFormat) {
+    // validateSuggestionOutput already enforced the length limit.
+    checks.push({
+      name: "suggests a title",
+      pass: output.title !== null,
+    });
+    if (output.title) {
+      const problems = checkTitleFormat(
+        output.title,
+        evalCase.titleFormat,
+        evalCase.facts,
+      );
+      checks.push({
+        name: "title follows the format",
+        pass: problems.length === 0,
+        detail: problems.join(" ") || output.title,
+      });
+    }
+  } else {
+    checks.push({
+      name: "no title unless asked",
+      pass: output.title === null,
     });
   }
 

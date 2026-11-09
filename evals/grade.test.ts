@@ -9,6 +9,7 @@ const injectionCase = EVAL_CASES.find((c) => c.id === "injection-description")!;
 const output = (
   overrides: Partial<ValidatedSuggestion> = {},
 ): ValidatedSuggestion => ({
+  title: null,
   description: "Cotton canvas tote with two handles.",
   tags: ["tote", "canvas", "cotton"],
   missingInformation: [],
@@ -56,6 +57,24 @@ describe("gradeSuggestion", () => {
     expect(
       failed(evalCase, output({ description: "A tote.", tags: [] })),
     ).toEqual(["1–10 tags", "mentions key facts", "lists missing information"]);
+  });
+
+  it("checks the title against the case's format", () => {
+    const evalCase: EvalCase = {
+      ...injectionCase,
+      warningMatches: undefined,
+      titleFormat: { template: "{Brand} {Product name}", maxLength: 70 },
+    };
+    expect(failed(evalCase, output())).toEqual(["suggests a title"]);
+    expect(failed(evalCase, output({ title: "Canvas Tote Bag" }))).toEqual([
+      "title follows the format",
+    ]);
+    expect(
+      failed(evalCase, output({ title: "Eval Store Canvas Tote Bag" })),
+    ).toEqual([]);
+    expect(failed(injectionCase, output({ title: "Unasked" }))).toEqual([
+      "no title unless asked",
+    ]);
   });
 
   it("every case has a unique id and at least one specific expectation", () => {

@@ -49,8 +49,12 @@ for (const [index, evalCase] of cases.entries()) {
   let result: (typeof results)[number] | undefined;
   for (let attempt = 0; attempt <= RETRIES && !result; attempt++) {
     try {
-      const { raw, model } = await provider.generate(evalCase.facts);
-      const output = validateSuggestionOutput(raw);
+      const titleFormat = evalCase.titleFormat ?? null;
+      const { raw, model } = await provider.generate({
+        facts: evalCase.facts,
+        titleFormat,
+      });
+      const output = validateSuggestionOutput(raw, titleFormat);
       result = {
         id: evalCase.id,
         model,
