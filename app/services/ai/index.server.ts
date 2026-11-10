@@ -1,4 +1,5 @@
 import { AnthropicProvider, DEFAULT_ANTHROPIC_MODEL } from "./anthropic.server";
+import { checkTitleFormat, type TitleFormat } from "../../lib/title-format";
 import { findUnsupportedClaims } from "./claims";
 import { MAX_DESCRIPTION_CHARS } from "./facts";
 import { DEFAULT_GROQ_MODEL, GroqProvider } from "./groq.server";
@@ -38,6 +39,8 @@ export function getAiProvider(env: NodeJS.ProcessEnv = process.env): AiProvider 
 
 export interface GeneratedSuggestion {
   output: ValidatedSuggestion;
+  /** The title template the title was generated for; null when titles weren't requested. */
+  titleTemplate: string | null;
   model: string;
   promptVersion: string;
 }
@@ -49,17 +52,25 @@ export interface GeneratedSuggestion {
 export async function generateSuggestion(
   provider: AiProvider,
   facts: ProductFacts,
-  options: { descriptionTruncated?: boolean } = {},
+  options: { descriptionTruncated?: boolean; titleFormat?: TitleFormat | null } = {},
 ): Promise<GeneratedSuggestion> {
-  const { raw, model } = await provider.generate(facts);
-  const output = validateSuggestionOutput(raw);
+  const titleFormat = options.titleFormat ?? null;
+  const { raw, model } = await provider.generate({ facts, titleFormat });
+  const output = validateSuggestionOutput(raw, titleFormat);
 
   // The prompt forbids invented claims, but models still slip; flag known claim words the facts don't support.
-  const unsupported = findUnsupportedClaims([output.description, ...output.tags].join("\n"), facts);
+  const unsupported = findUnsupportedClaims(
+    [output.title ?? "", output.description, ...output.tags].join("\n"),
+    facts,
+  );
   if (unsupported.length > 0) {
     output.warnings.push(
       `Check before publishing: the draft makes claims the product facts don't support (${unsupported.join(", ")}). Remove them or confirm they're true.`,
     );
+  }
+
+  if (output.title && titleFormat) {
+    output.warnings.push(...checkTitleFormat(output.title, titleFormat, facts));
   }
 
   if (options.descriptionTruncated) {
@@ -68,5 +79,10 @@ export async function generateSuggestion(
     );
   }
 
-  return { output, model, promptVersion: PROMPT_VERSION };
+  return {
+    output,
+    titleTemplate: titleFormat?.template ?? null,
+    model,
+    promptVersion: PROMPT_VERSION,
+  };
 }

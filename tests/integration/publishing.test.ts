@@ -71,6 +71,7 @@ const source: FakeProduct = {
 };
 
 const decision: Decision = {
+  title: null,
   description: "Soft merino beanie.\n\nRibbed <knit> & warm.",
   tags: ["wool", "Hats"],
   tagMode: "ADD",
@@ -89,7 +90,14 @@ async function newSuggestion(shopId: string) {
     shopId,
     product: { id: PRODUCT_ID, ...source },
     generated: {
-      output: { description: "Soft merino beanie.", tags: ["wool"], missingInformation: [], warnings: [] },
+      output: {
+        title: "Acme Merino Beanie",
+        description: "Soft merino beanie.",
+        tags: ["wool"],
+        missingInformation: [],
+        warnings: [],
+      },
+      titleTemplate: "{Brand} {Product name}",
       model: "test-model",
       promptVersion: "test",
     },
@@ -145,8 +153,40 @@ describe("publishing", () => {
   it("REPLACE sends only the approved tags; omitted fields aren't sent", async () => {
     const { admin, mutations } = fakeAdmin(source);
     const suggestion = await newSuggestion(shop.id);
-    await publishSuggestion(admin, shop.id, suggestion.id, { description: null, tags: ["wool"], tagMode: "REPLACE" });
+    await publishSuggestion(admin, shop.id, suggestion.id, {
+      title: null,
+      description: null,
+      tags: ["wool"],
+      tagMode: "REPLACE",
+    });
     expect(mutations).toEqual([{ id: PRODUCT_ID, tags: ["wool"] }]);
+  });
+
+  it("publishes an approved title and records it on the suggestion and the attempt", async () => {
+    const { admin, mutations } = fakeAdmin(source);
+    const suggestion = await newSuggestion(shop.id);
+    expect(suggestion).toMatchObject({ aiTitle: "Acme Merino Beanie", titleTemplate: "{Brand} {Product name}" });
+
+    const outcome = await publishSuggestion(admin, shop.id, suggestion.id, {
+      title: "Acme Merino Beanie – Grey",
+      description: null,
+      tags: null,
+      tagMode: "ADD",
+    });
+
+    expect(outcome).toEqual({ status: "published" });
+    expect(mutations).toEqual([{ id: PRODUCT_ID, title: "Acme Merino Beanie – Grey" }]);
+    const saved = await db.suggestion.findUniqueOrThrow({ where: { id: suggestion.id } });
+    expect(saved.approvedTitle).toBe("Acme Merino Beanie – Grey");
+    expect((await attemptsFor(suggestion.id))[0].title).toBe("Acme Merino Beanie – Grey");
+  });
+
+  it("stops with CONFLICT when the title changed in Shopify", async () => {
+    const { admin, mutations } = fakeAdmin({ ...source, title: "Renamed in Shopify" });
+    const suggestion = await newSuggestion(shop.id);
+    const outcome = await publishSuggestion(admin, shop.id, suggestion.id, { ...decision, title: "Acme Merino Beanie" });
+    expect(outcome.status).toBe("conflict");
+    expect(mutations).toHaveLength(0);
   });
 
   it("stops with CONFLICT and sends nothing when the product changed since the snapshot", async () => {

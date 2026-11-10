@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parsePageArgs } from "./pagination";
+import { parsePageArgs, parsePageNumber, parsePageSize } from "./pagination";
 
 const params = (query: string) => new URLSearchParams(query);
 
@@ -39,5 +39,30 @@ describe("parsePageArgs", () => {
       first: 20,
       after: null,
     });
+  });
+});
+
+describe("parsePageSize", () => {
+  it("accepts the allowed sizes", () => {
+    expect(parsePageSize(params("size=50"))).toBe(50);
+    expect(parsePageSize(params("size=100"))).toBe(100);
+  });
+
+  it("falls back to 20 for missing or other values", () => {
+    expect(parsePageSize(params(""))).toBe(20);
+    expect(parsePageSize(params("size=250"))).toBe(20);
+    expect(parsePageSize(params("size=abc"))).toBe(20);
+  });
+});
+
+describe("parsePageNumber", () => {
+  it("reads a positive whole page number", () => {
+    expect(parsePageNumber(params("page=3"))).toBe(3);
+  });
+
+  it("falls back to page 1 for invalid values", () => {
+    for (const value of ["", "0", "-2", "1.5", "x"]) {
+      expect(parsePageNumber(params(`page=${value}`))).toBe(1);
+    }
   });
 });

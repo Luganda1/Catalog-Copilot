@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { generateSuggestion, getAiProvider } from "./index.server";
 import { MOCK_WARNING, MockProvider } from "./mock.server";
@@ -96,11 +96,64 @@ describe("generateSuggestion", () => {
   });
 });
 
+describe("generateSuggestion titles", () => {
+  const titleFormat = { template: "{Brand} {Product name}", maxLength: 40 };
+  const draft = (title: string | null) => ({
+    title,
+    description: "A heated jacket.",
+    tags: ["jacket"],
+    missingInformation: [],
+    warnings: [],
+  });
+
+  it("passes the title format to the provider and keeps a valid title", async () => {
+    const generate = vi.fn(async () => ({ raw: draft("Acme Heated Jacket"), model: "fake" }));
+    const result = await generateSuggestion({ name: "fake", generate }, facts, { titleFormat });
+    expect(generate).toHaveBeenCalledWith({ facts, titleFormat });
+    expect(result.output.title).toBe("Acme Heated Jacket");
+    expect(result.titleTemplate).toBe("{Brand} {Product name}");
+    expect(result.output.warnings).toEqual([]);
+  });
+
+  it("drops a title when no format was set", async () => {
+    const result = await generateSuggestion(fakeProvider(draft("Acme Heated Jacket")), facts);
+    expect(result.output.title).toBeNull();
+    expect(result.titleTemplate).toBeNull();
+  });
+
+  it("drops an over-long title with a warning but keeps the rest of the draft", async () => {
+    const result = await generateSuggestion(fakeProvider(draft("Acme " + "Very ".repeat(10) + "Jacket")), facts, {
+      titleFormat,
+    });
+    expect(result.output.title).toBeNull();
+    expect(result.output.description).toBe("A heated jacket.");
+    expect(result.output.warnings).toEqual([expect.stringContaining("40-character limit")]);
+  });
+
+  it("warns when the title skips a fact the format asks for", async () => {
+    const result = await generateSuggestion(fakeProvider(draft("Heated Jacket")), facts, { titleFormat });
+    expect(result.output.warnings).toEqual([expect.stringContaining('brand ("Acme")')]);
+  });
+
+  it("checks the title for unsupported claims", async () => {
+    const result = await generateSuggestion(fakeProvider(draft("Acme Waterproof Jacket")), facts, { titleFormat });
+    expect(result.output.warnings).toEqual([expect.stringMatching(/waterproof/)]);
+  });
+});
+
 describe("MockProvider (mock, not a language model)", () => {
   it("produces output that passes validation and is labelled as mock", async () => {
     const result = await generateSuggestion(new MockProvider(), facts);
     expect(result.model).toBe("mock");
     expect(result.output.warnings).toContain(MOCK_WARNING);
     expect(result.output.tags).toEqual(["Jacket", "S", "M"]);
+    expect(result.output.title).toBeNull();
+  });
+
+  it("fills the title format from the facts", async () => {
+    const result = await generateSuggestion(new MockProvider(), facts, {
+      titleFormat: { template: "{Brand} {Product name} – {Key detail}", maxLength: 70 },
+    });
+    expect(result.output.title).toBe("Acme Heated Jacket – S, M");
   });
 });

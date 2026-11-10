@@ -1,8 +1,8 @@
 # Catalog Copilot
 
-An embedded Shopify app that helps merchants find incomplete product listings, draft grounded descriptions and tags with AI, and review every change before it is published to Shopify.
+An embedded Shopify app that helps merchants find incomplete product listings, draft grounded descriptions, tags, and consistently formatted titles with AI, and review every change before it is published to Shopify.
 
-> **Status: complete (Phase 5 of 5).** Runs on a development store; not submitted to the Shopify App Store. See [Evaluation](#evaluation), [Deployment](#deployment), and the [demo outline](docs/DEMO.md).
+> **Status: complete (version 1, phases 1–6).** Runs on a development store; not submitted to the Shopify App Store. See [Evaluation](#evaluation), [Deployment](#deployment), the [demo outline](docs/DEMO.md), and the [technical document](TECHNICAL_DOCUMENT.md).
 
 ## Stack
 
@@ -39,8 +39,8 @@ Key rules the code follows:
 ### Data model (`prisma/schema.prisma`)
 
 - `Session`: required by the Shopify session adapter (unchanged from the template).
-- `Shop`: one row per installed store (`domain` is unique); `uninstalledAt` is set by the `app/uninstalled` webhook.
-- `Suggestion`: product GID (string), source snapshot (title, description HTML, tags), validated AI output (description, tags, missing info, warnings, model, prompt version), the merchant's approved fields, and a status (`PENDING → PUBLISHING → PUBLISHED`, or `REJECTED`).
+- `Shop`: one row per installed store (`domain` is unique); `uninstalledAt` is set by the `app/uninstalled` webhook. `titleTemplate` and `titleMaxLength` hold the merchant's title format (null template = title suggestions off).
+- `Suggestion`: product GID (string), source snapshot (title, description HTML, tags), validated AI output (title and the title template it followed, description, tags, missing info, warnings, model, prompt version), the merchant's approved fields, and a status (`PENDING → PUBLISHING → PUBLISHED`, or `REJECTED`).
 - `PublishAttempt`: an append-only log of each publish try (`SUCCEEDED` / `FAILED` / `CONFLICT`) with the payload and any error details.
 
 ## Local setup
@@ -116,7 +116,8 @@ Flow: **Generate** → re-read the product from Shopify → build `ProductFacts`
 - **Claim guardrail.** After validation, `findUnsupportedClaims` (`app/services/ai/claims.ts`) looks for claim words shoppers rely on (waterproof, durable, warranty, certified, organic, non-toxic, vegan, "suitable for", superlatives, …) that don't appear anywhere in the product facts, and adds a warning naming them. It doesn't block the draft. It's a word list, not a fact checker: it misses claims phrased differently, and it treats any word in the facts as supported, including words inside an injected instruction.
 - **Stored safely.** The plain-text description is escaped into `<p>` HTML by the app (`textToSafeHtml`). Every suggestion records its model, prompt version, and the product snapshot.
 - **One pending suggestion per product.** Regenerating marks the previous one `SUPERSEDED` in the same transaction.
-- **Review screen.** Current and suggested content side by side, an editable description and tags, a choice between **Add to the existing tags** and **Replace all existing tags** with a preview of what will be added or removed, and banners for warnings, missing information, mock output, and products edited since generation. A merchant chooses what to publish (description, tags, or both) and then **Reject** or **Approve & Publish**.
+- **Title format.** In **Settings** (`/app/settings`) a merchant can set a title pattern such as `{Brand} {Product name} – {Key detail}` (placeholders: `{Brand}`, `{Product name}`, `{Product type}`, `{Key detail}`) and a maximum length. With a format set, the prompt gets a separate `<title_format>` block and the model returns a title that follows it, using only product facts. A placeholder with no matching fact is left out and flagged. The title is validated separately (`validateTitle`): an empty, HTML, or over-length title is dropped with a warning, and the description and tags are kept. `checkTitleFormat` then warns if the title leaves out the vendor or product type the format asks for, or is in capital letters. The claim guardrail covers the title too. Without a format, no title is requested and titles never change.
+- **Review screen.** Current and suggested content side by side, an editable title (when the draft has one), description, and tags, a choice between **Add to the existing tags** and **Replace all existing tags** with a preview of what will be added or removed, and banners for warnings, missing information, mock output, and products edited since generation. A merchant ticks what to publish (title, description, tags) and then **Reject** or **Approve & Publish**.
 
 ## Publishing and history (Phase 4)
 
@@ -140,23 +141,29 @@ Nothing is written to Shopify until the merchant clicks **Approve & Publish**. G
 
 **History** (`/app/history`) lists the shop's published and rejected suggestions and any with failed or conflicting attempts. It shows what was changed, the model, and the last error. It's always filtered by the authenticated shop.
 
-**Interface.** The dashboard scans the 100 most recently updated products (one query, about 4 cost points per product) to show catalog health as square tiles. The tiles also filter the list (`?view=attention|description|tags`). A **Next up** card links to the next incomplete listing. Products show as compact rows with 120 px thumbnails. The review page shows progress steps (generate → review → publish), and its sidebar holds the publish options and a pre-publish checklist.
+**Interface.** Three pages in the app navigation, plus the review page:
+- **Products** (`/app`, the landing page) reads the 100 most recently updated products in one query (about 4 cost points per product). Square catalog-health tiles sit in a row next to a **Next up** card that links to the next incomplete listing. Below them, one row holds the filter buttons (all, needs attention, no description, no tags, each with its count), a title search, and a page-size picker (20, 50, or 100). They control a product table (`?view=`, `?q=`, `?size=`). Search runs as you type (after a short pause). On "All products" it's a Shopify search where each word matches the start of a word in the title (`title:blue* AND title:sh*`); punctuation is dropped so typed text can't change the query. The filtered views apply the same match to the scan. "All products" pages through Shopify with cursors. The filtered views page through the 100-product scan, because Shopify search can't filter on an empty description.
+- **History** (`/app/history`), described above.
+- **Settings** (`/app/settings`): the title format, with a live example.
+- **Review page.** Warnings sit next to **Approve & Publish**. The current and draft titles and descriptions line up side by side. Tags are shown once, as they'll be after publishing, with added and removed tags marked.
 
 ## Evaluation
 
-`evals/` holds 12 product cases that target the ways a listing generator goes wrong:
+`evals/` holds 14 product cases that target the ways a listing generator goes wrong:
 - thin facts;
 - rich facts that should be used;
 - prompt injection in the description, title, and tags;
 - an attempt to close the facts block;
 - promotional claims in the existing description;
 - contradictory facts;
-- food, children's products, and electronics, where invented dietary, safety, or compatibility claims would be harmful.
+- food, children's products, and electronics, where invented dietary, safety, or compatibility claims would be harmful;
+- title formats: a shouty, promotional title rewritten into the merchant's pattern, and a missing vendor that must be left out and flagged (four cases ask for a title).
 
 `npm run eval` sends each case to the configured provider and grades the model's own output (after schema validation, before the app's claim warning is added). Each case gets:
 - the claim-word check;
 - a tag count check;
-- its own checks: text that must not appear, facts that must appear, an expected warning, and expected missing information.
+- its own checks: text that must not appear, facts that must appear, an expected warning, and expected missing information;
+- title checks: a title is returned only when the case sets a format, and it includes the vendor and product type the format asks for.
 
 The graders themselves are unit-tested (`evals/grade.test.ts`). Full outputs are saved to `evals/results/`, which is gitignored. `npm run eval:regrade` re-scores a saved run after the graders change.
 
@@ -167,6 +174,7 @@ The graders themselves are unit-tested (`evals/grade.test.ts`). Full outputs are
 | `2026-11-03.v1` | 3 / 12 | Original prompt |
 | `2026-11-04.v2` | 6 / 12 | Bans generic quality words; current-description claims go to warnings instead of the draft |
 | `2026-11-04.v3` | **8 / 12** | Bans invented usage ("for everyday use", "redeemable online"); fewer tags allowed when facts are thin |
+| `2026-11-09.v4` | not run yet | Adds title suggestions in the merchant's format; two new title cases (14 total) |
 
 What the runs showed:
 
@@ -230,3 +238,6 @@ docker build -t catalog-copilot .
 3. ✅ **AI generation and suggestion review** (structured output, server-side validation, side-by-side editable review)
 4. ✅ **Approved publishing and history** (conflict check, GraphQL and userErrors handling, duplicate-submit lock, shop-scoped history, integration tests)
 5. ✅ **Verification and deployment** (evaluation set run against the real model, claim guardrail, tightened prompt, dependency audit, Docker image, deployment guide, demo outline)
+6. ✅ **Products page and title formats** (dashboard and product list merged into one page with a filter row, title search, and page sizes; merchant-set title format in Settings; title suggestions validated, reviewed, and published like the other fields)
+
+**Possible next steps** (not built): run the evaluation for prompt v4; bulk title review across many products; a `shop/redact` handler and billing before any App Store submission; move to Prisma 7 and Vitest 4 when the Shopify adapter allows.

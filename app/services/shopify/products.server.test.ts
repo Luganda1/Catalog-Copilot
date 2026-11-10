@@ -53,7 +53,7 @@ describe("listProducts (mocked Admin API)", () => {
     const page = await listProducts(admin, { first: 20, after: "abc" });
 
     expect(graphql).toHaveBeenCalledWith(expect.stringContaining("products("), {
-      variables: { first: 20, after: "abc" },
+      variables: { first: 20, after: "abc", query: null },
     });
     expect(page.pageInfo).toEqual(pageInfo);
     expect(page.products[0]).toMatchObject({
@@ -64,6 +64,18 @@ describe("listProducts (mocked Admin API)", () => {
     expect(page.products[1]).toMatchObject({
       image: null,
       health: { missingDescription: true, missingTags: false },
+    });
+  });
+
+  it("passes a search query through to Shopify", async () => {
+    const { admin, graphql } = mockAdmin({
+      data: { products: { nodes: [], pageInfo } },
+    });
+
+    await listProducts(admin, { first: 20, after: null }, "title:blue*");
+
+    expect(graphql).toHaveBeenCalledWith(expect.any(String), {
+      variables: { first: 20, after: null, query: "title:blue*" },
     });
   });
 

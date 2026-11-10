@@ -3,7 +3,7 @@ import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 
 import { buildUserMessage, SYSTEM_PROMPT } from "./prompt";
 import { ModelOutputSchema } from "./schema";
-import { AiError, type AiProvider, type ProductFacts, type ProviderResult } from "./types";
+import { AiError, type AiProvider, type GenerationRequest, type ProviderResult } from "./types";
 
 export const DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5";
 
@@ -21,7 +21,7 @@ export class AnthropicProvider implements AiProvider {
     this.client = client ?? new Anthropic({ apiKey, timeout: 90_000 });
   }
 
-  async generate(facts: ProductFacts): Promise<ProviderResult> {
+  async generate({ facts, titleFormat }: GenerationRequest): Promise<ProviderResult> {
     let response;
     try {
       response = await this.client.beta.messages.parse({
@@ -37,7 +37,7 @@ export class AnthropicProvider implements AiProvider {
         betas: ["server-side-fallback-2026-07-01"],
         fallbacks: "default",
         system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content: buildUserMessage(facts) }],
+        messages: [{ role: "user", content: buildUserMessage(facts, titleFormat) }],
       });
     } catch (error) {
       throw toAiError(error);

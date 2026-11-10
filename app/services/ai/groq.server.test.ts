@@ -33,7 +33,7 @@ const completion = (content: string | null, finish_reason = "stop") => ({
 describe("GroqProvider (mocked fetch)", () => {
   it("sends a strict JSON-schema request and returns the parsed output", async () => {
     const { provider, fetchMock } = providerResponding(200, completion(JSON.stringify(output)));
-    await expect(provider.generate(facts)).resolves.toEqual({ raw: output, model: DEFAULT_GROQ_MODEL });
+    await expect(provider.generate({ facts, titleFormat: null })).resolves.toEqual({ raw: output, model: DEFAULT_GROQ_MODEL });
 
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe(GROQ_API_URL);
@@ -55,7 +55,7 @@ describe("GroqProvider (mocked fetch)", () => {
     ["a server error", 500, "oops", "provider_error"],
   ])("maps %s to an AiError", async (_label, status, body, code) => {
     const { provider } = providerResponding(status, body);
-    await expect(provider.generate(facts)).rejects.toMatchObject({ code });
+    await expect(provider.generate({ facts, titleFormat: null })).rejects.toMatchObject({ code });
   });
 
   it("maps a network failure to provider_error", async () => {
@@ -63,6 +63,6 @@ describe("GroqProvider (mocked fetch)", () => {
       throw new TypeError("fetch failed");
     });
     const provider = new GroqProvider("k", DEFAULT_GROQ_MODEL, fetchMock as typeof fetch);
-    await expect(provider.generate(facts)).rejects.toMatchObject({ code: "provider_error" });
+    await expect(provider.generate({ facts, titleFormat: null })).rejects.toMatchObject({ code: "provider_error" });
   });
 });
