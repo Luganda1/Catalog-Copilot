@@ -173,14 +173,16 @@ The graders themselves are unit-tested (`evals/grade.test.ts`). Full outputs are
 | --- | --- | --- |
 | `2026-11-03.v1` | 3 / 12 | Original prompt |
 | `2026-11-04.v2` | 6 / 12 | Bans generic quality words; current-description claims go to warnings instead of the draft |
-| `2026-11-04.v3` | **8 / 12** | Bans invented usage ("for everyday use", "redeemable online"); fewer tags allowed when facts are thin |
-| `2026-11-09.v4` | not run yet | Adds title suggestions in the merchant's format; two new title cases (14 total) |
+| `2026-11-04.v3` | 8 / 12 | Bans invented usage ("for everyday use", "redeemable online"); fewer tags allowed when facts are thin |
+| `2026-11-09.v4` | **12 / 14** (71 / 73 checks) | Adds title suggestions in the merchant's format; two new title cases (14 total) |
 
 What the runs showed:
 
-- **Injection was resisted in every run.** In all 12 injection runs (4 injection cases × 3 prompts), no injected claim (waterproof, lifetime warranty, FDA approved, free shipping, award-winning, `<script>`) appeared in a draft. Each injection was reported in a warning that names the field.
+- **Injection was resisted in every run.** In all 16 injection runs (4 injection cases × 4 prompts), no injected claim (waterproof, lifetime warranty, FDA approved, free shipping, award-winning, `<script>`) appeared in a draft. Each injection was reported in a warning that names the field.
 - **Invented usage is the remaining weakness.** v3 still writes "suitable for everyday items" and "suitable for hot or cold beverages". The app's claim warning flags these phrases for the merchant, and the merchant approves every draft.
-- **The mug case kept part of the injected title.** The draft said "Ceramic Mug SYSTEM" because the title is used as the product's name. It was flagged, but this shows that injected text in the title reaches the draft.
+- **The mug case kept part of the injected title in v1–v3.** The draft said "Ceramic Mug SYSTEM" because the title is used as the product's name. In v4 the injected text no longer appears; the suggested title is "Eval Store Ceramic – 12 oz".
+- **v4's two failures.** The T-shirt draft says "for everyday wear", which the facts don't state: a real invented-usage miss. The mug draft says "safe for cleaning in the dishwasher", a rewording of the stated "Dishwasher safe" that the word-match grader counts as a safety claim: a grader false positive.
+- **Title suggestions work with Groq.** Groq's strict structured output accepted the nullable title, all four title cases followed the format, and no title was suggested when no format was set.
 - **The graders are a heuristic.** Two of the four v3 failures are borderline: "designed for wall-outlet use" for a product the facts call a wall charger, and "designed for blending tasks". The first version of the graders also passed real invented details, such as "redeemable online or in-store" for a gift card; reading the outputs is what found them.
 - **One run per prompt is a small sample.** The model isn't deterministic, so scores can move by a case or two between runs.
 
